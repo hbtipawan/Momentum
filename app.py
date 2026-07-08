@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+"""
+app.py — Dual-Strategy Momentum Screener (1,000–25,000 Cr universe)
+
+Two backtest-validated strategies (15-year study, 2011–2026):
+  STRATEGY A — Fast Momentum : 0.5×1M + 0.5×3M return  (CAGR champ, lumpy)
+  STRATEGY B — 12−1 Momentum : 12M return skipping last month (most robust)
+
+Shared rules: equal weight · buffer band 1.75×N · 30% trailing stop ·
+200DMA regime filter on Nifty 500 · rebalance every 2nd Monday.
+
+Universe: Stocks.csv in repo root, or upload in-app (column: Symbol).
+"""
+import io
+import json
+import datetime as dt
+import urllib.request
+import concurrent.futures
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+st.set_page_config(page_title="Momentum Screener", layout="wide", page_icon="🏆")
+
+st.markdown("""
+<style>
+  html, body, [class*="css"] { font-size: 18px !important; }
+  h1 { font-size: 32px !important; }
+  h2, h3 { font-size: 25px !important; }
+  .stTabs [data-baseweb="tab"] { font-size: 19px !important; padding: 10px 18px; }
+  thead th { font-size: 17px !important; }
+  tbody td { font-size: 17px !important; }
+  .big-green { background:#d4f4dd; border:3px solid #1a7a3a; border-radius:10px;
+               padding:14px 20px; font-size:24px; font-weight:bold; color:#0a5a2a; }
+  .big-red   { background:#ffe0e0; border:3px solid #c00; border-radius:10px;
+               padding:14px 20px; font-size:24px; font-weight:bold; color:#900; }
+</style>
+""", unsafe_allow_html=True)
+
+HEADERS = {"User-Agent": "Mozilla/5.0"}
+STOP_PCT = 0.30
+BENCH_SYMBOL = "%5ECRSLDX"          # Nifty 500
+
+
+# ------------------------------------------------------------------ universe
+def load_universe(uploaded) -> pd.DataFrame:
+    """Priority: in-app upload > Stocks.csv in repo root."""
+    if uploaded is not None:
+        df = pd.read_csv(uploaded)
+    else:
+        try:
+            df = pd.read_csv("Stocks.csv")
+        except FileNotFoundError:
+            st.error("No universe found. Add **Stocks.csv** to the repo root "
+                     "or upload it in the sidebar. Required column: `Symbol`.")
+            st.stop()
+    sym_col = next((c for c in df.columns if c.strip().lower() == "symbol"),
+                   df.columns[0])
+    df = df.rename(columns={sym_col: "Symbol"})
+    df["Symbol"] = df["Symbol"].astype(str).str.strip().str.upper()
+    df = df[df["Symbol"].str.len() > 0].drop_duplicates("Symbol")
+    return df
+
+
+# ------------------------------------------------------------------ data
+def _fetch_one(sym: str, rng: str = "2y"):
+    ysym = sym if sym.startswith("%5E") else f"{sym}.NS"
+    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/"
+           f"{ysym}?range={rng}&interval=1d")
+    try:
+        req = urllib.request.Request(url, headers=HEADERS)
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            d = json.load(resp)
+        r = d["chart"]["result"][0]
+        s = pd.Series(r["indicators"]["quote"][0]["close"],
+                      index=pd.to_datetime(r["timestamp"], unit="s").normalize(),
+                      name=sym).dropna()
+        return sym, s[~s.index.duplicated(keep="last")]
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def fetch_prices(symbols: tuple) -> pd.DataFrame:
+    series = {}
+    prog = st.progress(0.0, text="Fetching prices…")
+    todo = list(symbols) + [BENCH_SYMBOL]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as ex:
+        futures = {ex.submit(_fetch_one, s): s for s in todo}
+        done = 0
+        for fut in concurrent.futures.as_completed(futures):
+            res = fut.result()
+            if res:
+                series[res[0]] = res[1]
+            done += 1
+            if done % 25 == 0:
+                prog.progress(done / len(todo), text=f"Fetching… {done}/{len(todo)}")
+    prog.empty()
+    return pd.DataFrame(series).sort_index()
+
+
+# ------------------------------------------------------------------ signals
+def compute_rankings(prices: pd.DataFrame):
+    """Return (df_A, df_B, regime_on, bench_info)."""
+    bench = prices[BENCH_SYMBOL].dropna()
+    stocks = prices.drop(columns=[BENCH_SYMBOL])
+
+    def lag_price(k):
+        return stocks.apply(lambda col: col.dropna().iloc[-k - 1]
+                            if col.dropna().shape[0] > k else np.nan)
+
+    last = stocks.apply(lambda col: col.dropna().iloc[-1]
+                        if col.dropna().shape[0] else np.nan)
+    p21, p63, p252 = lag_price(21), lag_price(63), lag_price(252)
+
+    r1m = (last / p21 - 1) * 100
+    r3m = (last / p63 - 1) * 100
+    r12_1 = (p21 / p252 - 1) * 100          # 12M skipping last month
+
+    base = pd.DataFrame({"CMP": last, "1M %": r1m, "3M %": r3m,
+                         "12−1M %": r12_1})
+
+    dfA = base.dropna(subset=["1M %", "3M %"]).copy()
+    dfA["Score"] = 0.5 * dfA["1M %"] + 0.5 * dfA["3M %"]
+    dfA = dfA.sort_values("Score", ascending=False)
+    dfA["Rank"] = range(1, len(dfA) + 1)
+
+    dfB = base.dropna(subset=["12−1M %"]).copy()
+    dfB["Score"] = dfB["12−1M %"]
+    dfB = dfB.sort_values("Score", ascending=False)
+    dfB["Rank"] = range(1, len(dfB) + 1)
+
+    dma200 = bench.rolling(200).mean().iloc[-1]
+    regime_on = bool(bench.iloc[-1] >= dma200) if not np.isnan(dma200) else True
+    bench_info = dict(level=round(float(bench.iloc[-1]), 1),
+                      dma=round(float(dma200), 1) if not np.isnan(dma200) else None,
+                      date=str(bench.index[-1].date()))
+    return dfA, dfB, regime_on, bench_info
+
+
+def zone_col(df, top_n, buffer):
+    return np.where(df["Rank"] <= top_n, "🟢 TOP",
+           np.where(df["Rank"] <= buffer, "🟡 BUFFER", ""))
+
+
+def rotation(df, held, top_n, buffer):
+    rank_map = df["Rank"].to_dict()
+    kept = [s for s in held if rank_map.get(s, 9e9) <= buffer]
+    sells = [s for s in held if s not in kept]
+    buys = [s for s in df.index if s not in kept][:max(top_n - len(kept), 0)]
+    rows = ([{"Symbol": s, "Action": "🔴 SELL",
+              "Rank": rank_map.get(s, "out of universe"),
+              "Why": f"Rank fell below {buffer} (or left universe)"} for s in sells]
+            + [{"Symbol": s, "Action": "🟢 BUY", "Rank": rank_map.get(s),
+                "Why": "New entrant filling vacancy"} for s in buys]
+            + [{"Symbol": s,
+                "Action": "🟡 HOLD (buffer)" if rank_map[s] > top_n else "⚪ HOLD",
+                "Rank": rank_map[s], "Why": ""} for s in kept])
+    return pd.DataFrame(rows)
+
+
+def stop_report(prices, portfolio):
+    """portfolio: {symbol: entry_date_str}. Peak measured from entry date."""
+    rows = []
+    for sym, entry in portfolio.items():
+        if sym not in prices.columns:
+            rows.append({"Symbol": sym, "Status": "⚠️ no data", "CMP": None,
+                         "Peak since entry": None, "Stop level": None,
+                         "Room to stop %": None})
+            continue
+        s = prices[sym].dropna()
+        seg = s[s.index >= pd.Timestamp(entry)] if entry else s
+        if seg.empty:
+            seg = s
+        peak = float(seg.max())
+        cmp_ = float(seg.iloc[-1])
+        stop_level = peak * (1 - STOP_PCT)
+        room = (cmp_ / stop_level - 1) * 100
+        status = "🔴 STOP HIT — SELL" if cmp_ < stop_level else \
+                 ("🟠 within 5% of stop" if room < 5 else "🟢 OK")
+        rows.append({"Symbol": sym, "Status": status, "CMP": round(cmp_, 1),
+                     "Peak since entry": round(peak, 1),
+                     "Stop level": round(stop_level, 1),
+                     "Room to stop %": round(room, 1)})
+    return pd.DataFrame(rows)
+
+
+# ------------------------------------------------------------------ UI
+st.title("🏆 Dual-Strategy Momentum Screener")
+st.caption("Universe: your Stocks.csv (1,000–25,000 Cr band) · "
+           "Strategies validated on a 15-year backtest (2011–2026)")
+
+with st.sidebar:
+    st.header("Universe")
+    up = st.file_uploader("Upload Stocks.csv (optional — else repo file is used)",
+                          type="csv")
+    st.header("Portfolio size")
+    top_n = st.select_slider("Stocks per strategy", [5, 10, 15], value=5)
+    buffer = int(top_n * 1.75)
+    st.caption(f"Buffer band: hold while rank ≤ {buffer}")
+    st.divider()
+    if st.button("🔃 Force refresh prices"):
+        st.cache_data.clear()
+        st.rerun()
+
+uni = load_universe(up)
+st.sidebar.markdown(f"**{len(uni)} stocks loaded**")
+prices = fetch_prices(tuple(uni["Symbol"].tolist()))
+dfA, dfB, regime_on, bi = compute_rankings(prices)
+
+name_map = uni.set_index("Symbol")
+for df in (dfA, dfB):
+    if "Industry" in name_map.columns:
+        df.insert(0, "Industry", [name_map["Industry"].get(s, "") for s in df.index])
+
+# ---- regime banner ----
+if regime_on:
+    st.markdown(f'<div class="big-green">🟢 REGIME: RISK-ON — Nifty 500 '
+                f'({bi["level"]}) is ABOVE its 200DMA ({bi["dma"]}). '
+                f'Strategy positions are active.</div>', unsafe_allow_html=True)
+else:
+    st.markdown(f'<div class="big-red">🔴 REGIME: RISK-OFF — Nifty 500 '
+                f'({bi["level"]}) is BELOW its 200DMA ({bi["dma"]}). '
+                f'Rule: move to CASH at the next rebalance. Do NOT take new '
+                f'entries.</div>', unsafe_allow_html=True)
+st.caption(f"Prices as of {bi['date']} · trailing stop {int(STOP_PCT*100)}% "
+           f"from post-entry peak, checked daily")
+
+tabA, tabB, tabRot, tabStop, tabManual = st.tabs(
+    ["⚡ Strategy A — Fast Momentum", "🏛️ Strategy B — 12−1 Momentum",
+     "🔄 Rotation Actions", "🛑 Stop-Loss Tracker", "📖 Manual"])
+
+fmt = {"CMP": "{:.1f}", "1M %": "{:.1f}", "3M %": "{:.1f}",
+       "12−1M %": "{:.1f}", "Score": "{:.1f}"}
+
+with tabA:
+    st.subheader(f"Strategy A — Fast Momentum (0.5×1M + 0.5×3M) · Top {top_n}")
+    st.caption("15y backtest: 52.3% CAGR, −41.5% MaxDD — highest CAGR, "
+               "lumpiest ride. Rebalance every 2nd Monday.")
+    d = dfA.copy()
+    d["Zone"] = zone_col(d, top_n, buffer)
+    cols = ["Rank", "Zone", "Industry", "CMP", "1M %", "3M %", "Score"]
+    cols = [c for c in cols if c in d.columns]
+    st.dataframe(d.head(buffer + 10)[cols].style.format(fmt),
+                 use_container_width=True, height=650)
+    st.download_button("⬇️ Full ranking A (CSV)", d.to_csv().encode(),
+                       f"strategyA_{dt.date.today()}.csv")
+
+with tabB:
+    st.subheader(f"Strategy B — 12−1 Momentum (12M return, skip last month) "
+                 f"· Top {top_n}")
+    st.caption("15y backtest (top 10): 42.7% CAGR, −36.4% MaxDD, Sharpe 1.36 — "
+               "most consistent across eras. RECOMMENDED core. "
+               "Rebalance every 2nd Monday.")
+    d = dfB.copy()
+    d["Zone"] = zone_col(d, top_n, buffer)
+    cols = ["Rank", "Zone", "Industry", "CMP", "12−1M %", "Score"]
+    cols = [c for c in cols if c in d.columns]
+    st.dataframe(d.head(buffer + 10)[cols].style.format(fmt),
+                 use_container_width=True, height=650)
+    st.download_button("⬇️ Full ranking B (CSV)", d.to_csv().encode(),
+                       f"strategyB_{dt.date.today()}.csv")
+
+with tabRot:
+    st.subheader("Rotation vs your current holdings")
+    strat = st.radio("Which strategy book?", ["A — Fast", "B — 12−1"],
+                     horizontal=True)
+    df_use = dfA if strat.startswith("A") else dfB
+    c1, c2 = st.columns(2)
+    with c1:
+        held_text = st.text_area("Holdings (comma-separated symbols)",
+                                 placeholder="HFCL, ANANDRATHI, ...")
+    with c2:
+        pf_up = st.file_uploader("…or upload portfolio.json", type="json",
+                                 key="pf")
+    portfolio = {}
+    if pf_up:
+        portfolio = json.load(pf_up).get("holdings", {})
+        if isinstance(portfolio, list):                    # legacy format
+            portfolio = {s: None for s in portfolio}
+    elif held_text.strip():
+        portfolio = {s.strip().upper(): None
+                     for s in held_text.split(",") if s.strip()}
+
+    if portfolio:
+        if not regime_on:
+            st.error("🔴 REGIME IS RISK-OFF → the rule says SELL EVERYTHING "
+                     "to cash at this rebalance. Table below shows what "
+                     "rotation WOULD be if you override the regime rule.")
+        act = rotation(df_use, list(portfolio), top_n, buffer)
+        st.dataframe(act, use_container_width=True)
+        today = str(dt.date.today())
+        new_pf = {}
+        for _, r in act.iterrows():
+            if "SELL" in r["Action"]:
+                continue
+            new_pf[r["Symbol"]] = (today if "BUY" in r["Action"]
+                                   else portfolio.get(r["Symbol"]) or today)
+        st.download_button("⬇️ Save portfolio.json (re-upload next rebalance)",
+                           json.dumps({"holdings": new_pf,
+                                       "strategy": strat,
+                                       "as_of": bi["date"]}, indent=2).encode(),
+                           "portfolio.json")
+    else:
+        st.info(f"No holdings entered. A fresh start = simply buy the "
+                f"Top {top_n} from the strategy tab, equal rupee amounts, "
+                f"then download portfolio.json here after entering them above.")
+
+with tabStop:
+    st.subheader(f"Trailing stop tracker ({int(STOP_PCT*100)}% from "
+                 f"post-entry peak)")
+    st.caption("Upload the portfolio.json saved from the Rotation tab — entry "
+               "dates in it let the tracker measure each stock's peak "
+               "correctly.")
+    pf_up2 = st.file_uploader("portfolio.json", type="json", key="pf2")
+    manual = st.text_area("…or enter SYMBOL:YYYY-MM-DD per line",
+                          placeholder="HFCL:2026-06-02\nANANDRATHI:2026-05-19")
+    pf = {}
+    if pf_up2:
+        pf = json.load(pf_up2).get("holdings", {})
+        if isinstance(pf, list):
+            pf = {s: None for s in pf}
+    elif manual.strip():
+        for line in manual.splitlines():
+            if ":" in line:
+                s, d_ = line.split(":", 1)
+                pf[s.strip().upper()] = d_.strip()
+            elif line.strip():
+                pf[line.strip().upper()] = None
+    if pf:
+        rep = stop_report(prices, pf)
+        st.dataframe(rep, use_container_width=True)
+        hits = rep[rep["Status"].str.contains("STOP HIT", na=False)]
+        if len(hits):
+            st.error(f"🔴 {len(hits)} stop(s) breached — the rule is to sell "
+                     f"at the NEXT market open, no exceptions: "
+                     f"{', '.join(hits['Symbol'])}")
+    else:
+        st.info("Nothing to track yet.")
+
+with tabManual:
+    st.subheader("📖 How to use & rebalance")
+    try:
+        st.markdown(open("MANUAL.md").read())
+    except FileNotFoundError:
+        st.warning("MANUAL.md not found in repo.")
+
+st.divider()
+st.caption("Data: Yahoo Finance (delayed) · Backtest details in repo README · "
+           "Research tool, not investment advice.")
