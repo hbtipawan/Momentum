@@ -583,7 +583,7 @@ with tabA:
     st.caption("Stocks with any daily move >15% in the last 90 days are "
                "auto-excluded (anti-speculation rule — cut MaxDD by ~7 pts "
                "in the 15y re-validation with the same MAR). "
-               "Rebalance every 2nd Monday.")
+               "Rebalance fortnightly per tranche — see Manual §4 tranching.")
     d = dfA.copy()
     d["Zone"] = zone_col(d, top_n, buffer)
     cols = ["Rank", "Zone", "Industry", "CMP", "1M %", "3M %", "MaxGap %",
@@ -602,7 +602,7 @@ with tabB:
                "Barroso–Santa-Clara style). 15y re-validation vs plain 12−1: "
                "CAGR 34.0%→43.3%, MaxDD −36.3%→−34.5%, Sharpe 1.33→1.68, "
                "and it won all three 5-year eras. RECOMMENDED core, N=10. "
-               "Rebalance every 2nd Monday.")
+               "Rebalance fortnightly per tranche — see Manual §4 tranching.")
     d = dfB.copy()
     d["Zone"] = zone_col(d, top_n, buffer)
     cols = ["Rank", "Zone", "Industry", "CMP", "6M %", "12−1M %", "Vol %",

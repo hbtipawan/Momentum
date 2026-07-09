@@ -80,16 +80,35 @@ automatically — you never compute anything by hand.
 
 ---
 
-## 4. Rebalance routine — every 2nd Monday (15 minutes)
+## 4. Rebalance routine — Mondays, tranched (8–15 minutes)
 
-Do this on the **1st and 3rd Monday of each month**, after 9:30am IST:
+**Why Monday at all?** Tested: all five weekdays, both books, era-by-era.
+No weekday has a robust edge — Friday looked +7 pts better for Strategy A
+but won only 7 of 15 years and the edge INVERTED under a one-week phase
+shift, i.e. timing luck. The "Monday crowding" fear shows no measurable
+tax at this fortnightly frequency. What DOES matter is phase: 1st&3rd vs
+2nd&4th Mondays differed by ±4 pts CAGR — also pure luck.
+
+**The fix is TRANCHING (recommended): split capital into two half-books.**
+- **Tranche 1**: rebalance on the **1st and 3rd Monday** of each month.
+- **Tranche 2**: rebalance on the **2nd and 4th Monday**.
+Each tranche runs the full rules on half the capital with its own
+`portfolio.json`. Every Monday you touch exactly one tranche. 15y
+evidence (B v2 core): CAGR 43.3%→45.7%, MaxDD −34.5%→−31.3%, MAR
+1.26→1.46, better in all three eras — not by predicting the lucky phase,
+but by averaging the luck away. If you prefer operational simplicity,
+running a single book on 1st & 3rd Mondays remains valid — you are just
+accepting a ±4 pt luck band around the expected result.
+
+On your tranche's Monday, after 9:30am IST:
 
 1. Open the app. Note the **regime banner** first.
    - 🔴 RED → you should already be in cash (the daily rule below); if
      anything is still held, sell it now. Skip steps 2–5.
 2. Open your strategy tab (A or B). The ranking is live.
-3. Go to **Rotation Actions** → upload last time's `portfolio.json`
-   (or paste your holdings).
+3. Go to **Rotation Actions** → upload THIS TRANCHE's last
+   `portfolio.json` (or paste its holdings). Keep the two tranche files
+   separate — name them e.g. `portfolio_T1.json` / `portfolio_T2.json`.
 4. Execute exactly what the table says:
    - 🔴 SELL rows first (market/limit orders near the open),
    - then 🟢 BUY rows, equal rupee amounts
@@ -195,6 +214,12 @@ banner.
 **Q: Can I skip a stock I don't like and take rank 6 instead?**
 No. The moment discretion enters, the backtest no longer describes your
 system.
+
+**Q: Shouldn't I rebalance on Friday to front-run the Monday crowd?**
+Tested — no. Friday's apparent edge on Strategy A was concentrated in a
+few lucky years and flipped negative when the weeks were phase-shifted.
+No weekday is robustly better. Tranche across two Monday phases instead;
+that's the only timing change the evidence supports.
 
 **Q: Why gold and not just a liquid fund when RED?**
 Both were backtested. Liquid-only added ~4 pts CAGR over idle cash;

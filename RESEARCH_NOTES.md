@@ -118,6 +118,49 @@ flatters the recent era (though the sleeve also won 2011–16); gold ETF
 taxation differs from equity; sleeve results assume same-day execution
 of regime flips.
 
+## Rebalance-day study (added after the sleeve study)
+
+Question: is Monday sub-optimal because momentum traders crowd it?
+Tested: all five weekdays (1st & 3rd occurrence per month), both adopted
+books, era-by-era; then phase shifts (2nd & 4th); then two-tranche
+staggering (Hoffstein's rebalance-timing-luck fix).
+
+| B v2 core | Mon | Tue | Wed | Thu | Fri |
+|---|---|---|---|---|---|
+| CAGR | 43.3% | 41.9% | 44.0% | 40.5% | 42.8% |
+| MaxDD | −34.5% | −35.5% | −37.8% | −35.2% | −37.4% |
+
+| A v2 | Mon | Tue | Wed | Thu | Fri |
+|---|---|---|---|---|---|
+| CAGR | 62.3% | 59.4% | 63.8% | 57.3% | 69.4% |
+| MaxDD | −42.0% | −49.3% | −42.6% | −47.6% | −38.7% |
+
+Friday-on-A looked adopt-worthy (+7 pts, lower DD, best in 2 of 3 eras)
+but FAILED robustness: won only 7 of 15 calendar years (coin flip; edge
+concentrated in 2014/2021), and under a one-week phase shift (2nd & 4th
+Fridays) it fell to 58.0% vs Monday's 62.0% — a structural crowding edge
+would survive a phase shift. REJECTED as timing luck. No "Monday tax"
+is measurable at fortnightly frequency in this universe.
+
+Phase matters as much as day and is equally luck: B core on 2nd & 4th
+Mondays = 47.7%/−30.1% vs 43.3%/−34.5% on 1st & 3rd (±4 pts, no way to
+know the lucky phase in advance).
+
+**ADOPTED: two-tranche staggering** — half the capital rebalances 1st &
+3rd Monday, half on 2nd & 4th, each with full rules and its own
+portfolio.json:
+
+| | CAGR | MaxDD | Sharpe | MAR | eras |
+|---|---|---|---|---|---|
+| B core, 1st&3rd only | 43.3% | −34.5% | 1.68 | 1.26 | 27.5/43.0/61.1 |
+| B core, TRANCHED | 45.7% | −31.3% | 1.76 | 1.46 | 28.7/45.0/65.6 |
+| A v2, 1st&3rd only | 62.3% | −42.0% | 1.89 | 1.48 | 28.8/80.0/83.9 |
+| A v2, TRANCHED | 62.2% | −46.7% | 1.94 | 1.33 | 29.4/80.0/82.2 |
+
+Tranching doesn't predict the lucky phase — it averages the luck away
+(diversification across time). Optional for A (CAGR-neutral, smoother
+Sharpe); clearly positive for the B core.
+
 ## Known limitations (unchanged from v1)
 
 - Survivorship bias: absolute CAGRs are inflated; use the README's
