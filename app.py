@@ -281,6 +281,127 @@ def compute_rankings(prices: pd.DataFrame):
     return dfA, dfB, regime_on, regime_info
 
 
+# ------------------------------------------------------- YTD tracker
+# Simulates each book with the full locked rules (rebalance 1st & 3rd
+# Monday, buffer 1.75N, 30% stop, daily breadth regime with 2-day confirm,
+# 0.25%/side) from ~6 months BEFORE Jan 1 (warm start, so the book enters
+# the year already positioned like a continuously-running system), then
+# reports the equity change since Jan 1.
+SIM_COST = 0.0025
+
+
+def _sim_book(pxs, rr, breadth_s, score_frame, gapmax, top_n, gap_filter,
+              start, stop_pct=STOP_PCT):
+    buffer_n = int(top_n * 1.75)
+    dts = pxs.index[pxs.index >= start]
+    # rebalance dates: 1st & 3rd Monday each month
+    rbs = set()
+    for m in pd.period_range(dts[0], dts[-1], freq="M"):
+        mondays = pd.date_range(m.to_timestamp(),
+                                m.to_timestamp() + pd.offsets.MonthEnd(0),
+                                freq="W-MON")
+        for k in (0, 2):
+            if k < len(mondays):
+                nxt = dts[dts >= mondays[k]]
+                if len(nxt):
+                    rbs.add(nxt[0])
+    cash, pos = 1.0, {}
+    pending = set()
+    risk_on, green = True, 0
+    eq, eqd = [], []
+    for d in dts:
+        row = pxs.loc[d]
+        for s in list(pending):
+            v = row.get(s, np.nan)
+            if s in pos and not np.isnan(v):
+                cash += pos[s]["u"] * v * (1 - SIM_COST)
+                del pos[s]
+                pending.discard(s)
+        b = breadth_s.loc[d]
+        green = green + 1 if b > BREADTH_THRESHOLD else 0
+        if risk_on and b <= BREADTH_THRESHOLD:
+            risk_on = False
+            for s in list(pos):
+                v = row.get(s, np.nan)
+                if not np.isnan(v):
+                    cash += pos[s]["u"] * v * (1 - SIM_COST)
+                    del pos[s]
+        reenter = (not risk_on) and green >= 2
+        if reenter:
+            risk_on = True
+        for s, p in pos.items():
+            v = row.get(s, np.nan)
+            if not np.isnan(v):
+                p["pk"] = max(p["pk"], v)
+                if v < p["pk"] * (1 - stop_pct):
+                    pending.add(s)
+        if (d in rbs and risk_on) or reenter:
+            sc = score_frame.loc[d].copy()
+            sc[row <= MIN_PRICE] = np.nan
+            if gap_filter:
+                sc[gapmax.loc[d] > GAP_PCT] = np.nan
+            ranked = sc.dropna().sort_values(ascending=False)
+            rank = pd.Series(np.arange(1, len(ranked) + 1), index=ranked.index)
+            for s in list(pos):
+                if rank.get(s, 10**9) > buffer_n:
+                    v = row.get(s, np.nan)
+                    if not np.isnan(v):
+                        cash += pos[s]["u"] * v * (1 - SIM_COST)
+                        del pos[s]
+            vac = top_n - len(pos)
+            if vac > 0 and cash > 0:
+                per = cash / vac
+                for s in [x for x in ranked.index if x not in pos][:vac]:
+                    v = row.get(s, np.nan)
+                    if np.isnan(v):
+                        continue
+                    pos[s] = {"u": per * (1 - SIM_COST) / v, "pk": v}
+                    cash -= per
+        pv = cash + sum(p["u"] * row.get(s, np.nan) for s, p in pos.items()
+                        if not np.isnan(row.get(s, np.nan)))
+        eq.append(pv)
+        eqd.append(d)
+    return pd.Series(eq, index=eqd)
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner="Simulating YTD performance…")
+def ytd_tracker(_prices: pd.DataFrame, top_n: int, cache_key: str) -> dict:
+    """YTD % and MaxDD for A v2, B v2 and the Nifty 500 benchmark."""
+    stocks = _prices.drop(columns=[BENCH_SYMBOL], errors="ignore")
+    pxs = stocks.ffill(limit=5)
+    rr = pxs.pct_change()
+    jan1 = pd.Timestamp(dt.date.today().replace(month=1, day=1))
+    warm = jan1 - pd.DateOffset(months=6)
+
+    dma = pxs.rolling(200, min_periods=150).mean()
+    have = pxs.notna() & dma.notna()
+    breadth_s = ((pxs > dma) & have).sum(axis=1) / have.sum(axis=1).clip(lower=1)
+
+    vol6 = rr.rolling(126, min_periods=90).std() * np.sqrt(252)
+    vol12 = rr.rolling(252, min_periods=180).std() * np.sqrt(252)
+    gapmax = rr.abs().rolling(GAP_WINDOW, min_periods=60).max()
+    scoreA = 0.5 * (pxs / pxs.shift(21) - 1) + 0.5 * (pxs / pxs.shift(63) - 1)
+    scoreB = (0.5 * (pxs / pxs.shift(126) - 1) / vol6.clip(lower=0.01)
+              + 0.5 * (pxs.shift(21) / pxs.shift(252) - 1)
+              / vol12.clip(lower=0.01))
+
+    out = {}
+    for name, sf, gf, n in (("A v2", scoreA, True, top_n),
+                            ("B v2", scoreB, False, top_n)):
+        e = _sim_book(pxs, rr, breadth_s, sf, gapmax, n, gf, warm)
+        w = e[e.index >= jan1]
+        if len(w) > 2:
+            out[name] = ((w.iloc[-1] / w.iloc[0] - 1) * 100,
+                         ((w / w.cummax()) - 1).min() * 100)
+    if BENCH_SYMBOL in _prices.columns:
+        bw = _prices[BENCH_SYMBOL].dropna()
+        bw = bw[bw.index >= jan1]
+        if len(bw) > 2:
+            out["Nifty 500"] = ((bw.iloc[-1] / bw.iloc[0] - 1) * 100,
+                                ((bw / bw.cummax()) - 1).min() * 100)
+    return out
+
+
 def zone_col(df, top_n, buffer):
     return np.where(df["Rank"] <= top_n, "🟢 TOP",
            np.where(df["Rank"] <= buffer, "🟡 BUFFER", ""))
@@ -385,6 +506,19 @@ else:
 st.caption(f"Prices as of {bi['date']} · regime checked DAILY (exit same day "
            f"breadth closes below 50%) · trailing stop {int(STOP_PCT*100)}% "
            f"from post-entry peak, checked daily")
+
+# ---- YTD tracker: simulated book performance vs benchmark ----
+ytd = ytd_tracker(prices, top_n, cache_key=f"{bi['date']}|{top_n}")
+if ytd:
+    cols = st.columns(len(ytd))
+    for col, (name, (r, dd)) in zip(cols, ytd.items()):
+        col.metric(f"{name} — YTD", f"{r:+.1f}%", f"MaxDD {dd:.1f}%",
+                   delta_color="off")
+    st.caption(f"YTD = locked rules simulated at Top {top_n} from 6 months "
+               f"before 1 Jan (warm start), 0.25%/side costs — a discipline "
+               f"gauge, not your live P&L. Momentum earns its CAGR in GREEN "
+               f"regimes; trailing the index in a red, choppy year with a "
+               f"smaller drawdown is the system working, not failing.")
 
 tabA, tabB, tabRot, tabStop, tabManual = st.tabs(
     ["⚡ Strategy A v2 — Fast + Gap Filter",
