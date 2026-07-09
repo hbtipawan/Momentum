@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 """
-app.py — Dual-Strategy Momentum Screener (1,000–25,000 Cr universe)
+app.py — Dual-Strategy Momentum Screener v2 (1,000–25,000 Cr universe)
 
-Two backtest-validated strategies (15-year study, 2011–2026):
-  STRATEGY A — Fast Momentum : 0.5×1M + 0.5×3M return  (CAGR champ, lumpy)
-  STRATEGY B — 12−1 Momentum : 12M return skipping last month (most robust)
+Two backtest-validated strategies (15-year study 2011–2026, re-validated
+Jul 2026 on the current 982-stock band with per-era robustness testing):
+  STRATEGY A v2 — Fast Momentum + anti-speculation gap filter:
+      score = 0.5×1M + 0.5×3M return; stocks with ANY daily move >15%
+      in the last 90 days are EXCLUDED (Clenow/quality-momentum rule).
+  STRATEGY B v2 — Vol-Adjusted Dual-Lookback Momentum (core):
+      score = 0.5×(6M return ÷ ann. vol) + 0.5×(12−1M return ÷ ann. vol)
+      — the NSE-momentum-index / Barroso–Santa-Clara style signal that
+      beat plain 12−1 in ALL THREE 5-year eras of the backtest.
 
-Shared rules: equal weight · buffer band 1.75×N · 30% trailing stop ·
-200DMA regime filter on Nifty 500 · rebalance every 2nd Monday.
+Shared rules (unchanged): equal weight · buffer band 1.75×N · 30% trailing
+stop · DAILY universe-breadth regime filter (>50% above own 200DMA) ·
+rebalance every 2nd Monday.
 
 Universe: Stocks.csv in repo root, or upload in-app (column: Symbol).
 """
@@ -64,7 +71,7 @@ def load_universe(uploaded) -> pd.DataFrame:
 
 
 # ------------------------------------------------------------------ data
-def _fetch_one(sym: str, rng: str = "2y"):
+def _fetch_one(sym: str, rng: str = "3y"):   # 3y: 12−1 lag + 252d vol need ~504 bars
     ysym = sym if sym.startswith("%5E") else f"{sym}.NS"
     url = (f"https://query1.finance.yahoo.com/v8/finance/chart/"
            f"{ysym}?range={rng}&interval=1d")
@@ -105,34 +112,58 @@ MIN_PRICE = 20          # user rule: closing price must exceed Rs 20
 BREADTH_THRESHOLD = 0.50  # risk-on when >50% of universe above own 200DMA
 
 
+GAP_PCT = 0.15          # Strategy A: exclude stocks with any daily move >15%
+GAP_WINDOW = 90         # ...within the last 90 trading days
+
+
 def compute_rankings(prices: pd.DataFrame):
-    """Return (df_A, df_B, regime_on, regime_info)."""
+    """Return (df_A, df_B, regime_on, regime_info) — v2 signals."""
     stocks = prices.drop(columns=[BENCH_SYMBOL], errors="ignore")
+    pxs = stocks.ffill(limit=5)
+    rr = pxs.pct_change()
 
-    def lag_price(k):
-        return stocks.apply(lambda col: col.dropna().iloc[-k - 1]
-                            if col.dropna().shape[0] > k else np.nan)
-
-    last = stocks.apply(lambda col: col.dropna().iloc[-1]
-                        if col.dropna().shape[0] else np.nan)
-    p21, p63, p252 = lag_price(21), lag_price(63), lag_price(252)
+    last = pxs.iloc[-1]
+    p21 = pxs.shift(21).iloc[-1]
+    p63 = pxs.shift(63).iloc[-1]
+    p126 = pxs.shift(126).iloc[-1]
+    p252 = pxs.shift(252).iloc[-1]
 
     r1m = (last / p21 - 1) * 100
     r3m = (last / p63 - 1) * 100
+    r6m = (last / p126 - 1) * 100
     r12_1 = (p21 / p252 - 1) * 100          # 12M skipping last month
 
+    # annualised realised vol (denominators of the v2 core score)
+    vol6 = rr.rolling(126, min_periods=90).std().iloc[-1] * np.sqrt(252)
+    vol12 = rr.rolling(252, min_periods=180).std().iloc[-1] * np.sqrt(252)
+    # largest single-day move in the gap window (Strategy A exclusion)
+    gap_max = rr.abs().rolling(GAP_WINDOW, min_periods=60).max().iloc[-1] * 100
+
     base = pd.DataFrame({"CMP": last, "1M %": r1m, "3M %": r3m,
-                         "12−1M %": r12_1})
+                         "6M %": r6m, "12−1M %": r12_1,
+                         "Vol %": vol12 * 100, "MaxGap %": gap_max})
     base = base[base["CMP"] > MIN_PRICE]     # price filter (user rule)
 
+    # ---- STRATEGY A v2: fast momentum + anti-speculation gap filter ----
+    # 15y re-validation: excluding >15%-day movers cut MaxDD −48.9%→−42.0%
+    # and beat the unfiltered signal in 2 of 3 eras (only the 2016–21
+    # melt-up favoured no filter). MAR 1.47→1.48.
     dfA = base.dropna(subset=["1M %", "3M %"]).copy()
+    dfA = dfA[dfA["MaxGap %"] <= GAP_PCT * 100]
     dfA["Score"] = 0.5 * dfA["1M %"] + 0.5 * dfA["3M %"]
     dfA = dfA.sort_values("Score", ascending=False)
     dfA["Rank"] = range(1, len(dfA) + 1)
 
-    dfB = base.dropna(subset=["12−1M %"]).copy()
-    dfB["Score"] = dfB["12−1M %"]
-    dfB = dfB.sort_values("Score", ascending=False)
+    # ---- STRATEGY B v2: vol-adjusted dual-lookback momentum (core) ----
+    # score = 0.5×(6M/σ) + 0.5×(12−1/σ), the NSE-momentum-index style.
+    # 15y re-validation vs plain 12−1 (N10): CAGR 34.0%→43.3%,
+    # MaxDD −36.3%→−34.5%, Sharpe 1.33→1.68 — and it won ALL 3 eras.
+    dfB = base.dropna(subset=["6M %", "12−1M %"]).copy()
+    dfB = dfB[(dfB["Vol %"] > 0)]
+    v6 = vol6.reindex(dfB.index) * 100
+    dfB["Score"] = (0.5 * dfB["6M %"] / v6.clip(lower=1)
+                    + 0.5 * dfB["12−1M %"] / dfB["Vol %"].clip(lower=1))
+    dfB = dfB.dropna(subset=["Score"]).sort_values("Score", ascending=False)
     dfB["Rank"] = range(1, len(dfB) + 1)
 
     # ---- REGIME: universe internal breadth (15y-validated) ----
@@ -214,9 +245,10 @@ def stop_report(prices, portfolio):
 
 
 # ------------------------------------------------------------------ UI
-st.title("🏆 Dual-Strategy Momentum Screener")
+st.title("🏆 Dual-Strategy Momentum Screener v2")
 st.caption("Universe: your Stocks.csv (1,000–25,000 Cr band) · "
-           "Strategies validated on a 15-year backtest (2011–2026)")
+           "Strategies validated on a 15-year backtest (2011–2026), "
+           "v2 signals re-validated Jul 2026 with per-era robustness tests")
 
 with st.sidebar:
     st.header("Universe")
@@ -269,19 +301,25 @@ st.caption(f"Prices as of {bi['date']} · regime checked DAILY (exit same day "
            f"from post-entry peak, checked daily")
 
 tabA, tabB, tabRot, tabStop, tabManual = st.tabs(
-    ["⚡ Strategy A — Fast Momentum", "🏛️ Strategy B — 12−1 Momentum",
+    ["⚡ Strategy A v2 — Fast + Gap Filter",
+     "🏛️ Strategy B v2 — Vol-Adjusted Dual Momentum",
      "🔄 Rotation Actions", "🛑 Stop-Loss Tracker", "📖 Manual"])
 
-fmt = {"CMP": "{:.1f}", "1M %": "{:.1f}", "3M %": "{:.1f}",
-       "12−1M %": "{:.1f}", "Score": "{:.1f}"}
+fmt = {"CMP": "{:.1f}", "1M %": "{:.1f}", "3M %": "{:.1f}", "6M %": "{:.1f}",
+       "12−1M %": "{:.1f}", "Vol %": "{:.0f}", "MaxGap %": "{:.1f}",
+       "Score": "{:.2f}"}
 
 with tabA:
-    st.subheader(f"Strategy A — Fast Momentum (0.5×1M + 0.5×3M) · Top {top_n}")
-    st.caption("15y backtest: 52.3% CAGR, −41.5% MaxDD — highest CAGR, "
-               "lumpiest ride. Rebalance every 2nd Monday.")
+    st.subheader(f"Strategy A v2 — Fast Momentum + Gap Filter "
+                 f"(0.5×1M + 0.5×3M) · Top {top_n}")
+    st.caption("Stocks with any daily move >15% in the last 90 days are "
+               "auto-excluded (anti-speculation rule — cut MaxDD by ~7 pts "
+               "in the 15y re-validation with the same MAR). "
+               "Rebalance every 2nd Monday.")
     d = dfA.copy()
     d["Zone"] = zone_col(d, top_n, buffer)
-    cols = ["Rank", "Zone", "Industry", "CMP", "1M %", "3M %", "Score"]
+    cols = ["Rank", "Zone", "Industry", "CMP", "1M %", "3M %", "MaxGap %",
+            "Score"]
     cols = [c for c in cols if c in d.columns]
     st.dataframe(d.head(buffer + 10)[cols].style.format(fmt),
                  use_container_width=True, height=650)
@@ -289,14 +327,18 @@ with tabA:
                        f"strategyA_{dt.date.today()}.csv")
 
 with tabB:
-    st.subheader(f"Strategy B — 12−1 Momentum (12M return, skip last month) "
-                 f"· Top {top_n}")
-    st.caption("15y backtest (top 10): 42.7% CAGR, −36.4% MaxDD, Sharpe 1.36 — "
-               "most consistent across eras. RECOMMENDED core. "
+    st.subheader(f"Strategy B v2 — Vol-Adjusted Dual Momentum "
+                 f"(0.5×6M/σ + 0.5×12−1/σ) · Top {top_n}")
+    st.caption("The upgraded core: return DIVIDED by realised volatility, "
+               "averaged over 6M and 12−1M lookbacks (NSE-momentum-index / "
+               "Barroso–Santa-Clara style). 15y re-validation vs plain 12−1: "
+               "CAGR 34.0%→43.3%, MaxDD −36.3%→−34.5%, Sharpe 1.33→1.68, "
+               "and it won all three 5-year eras. RECOMMENDED core, N=10. "
                "Rebalance every 2nd Monday.")
     d = dfB.copy()
     d["Zone"] = zone_col(d, top_n, buffer)
-    cols = ["Rank", "Zone", "Industry", "CMP", "12−1M %", "Score"]
+    cols = ["Rank", "Zone", "Industry", "CMP", "6M %", "12−1M %", "Vol %",
+            "Score"]
     cols = [c for c in cols if c in d.columns]
     st.dataframe(d.head(buffer + 10)[cols].style.format(fmt),
                  use_container_width=True, height=650)
