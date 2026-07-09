@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
-make_universe.py — Regenerate Stocks.csv (1,000–25,000 Cr market cap band)
+make_universe.py — Regenerate Stocks.csv (all NSE index stocks ≥1,000 Cr, NO upper cap)
+
+Strategy A ranks the full list (cap-free validated better for fast momentum);
+the app applies the 1,000–25,000 Cr band to Strategy B internally using the
+MarketCap_Cr column — so keep that column in the CSV.
 
 Run monthly, then commit the new Stocks.csv to GitHub:
     pip install yfinance pandas
@@ -21,8 +25,9 @@ import yfinance as yf
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 MCAP_MIN_CR = 1000
-MCAP_MAX_CR = 25000
+MCAP_MAX_CR = None          # no upper cap — B's band is applied in-app
 INDEX_FILES = [
+    "ind_nifty100list.csv",
     "ind_niftymidcap150list.csv",
     "ind_niftysmallcap250list.csv",
     "ind_niftymicrocap250_list.csv",
@@ -65,14 +70,14 @@ def main():
     rows = sorted(
         (s, v["name"], v["industry"], v["mcap_cr"])
         for s, v in symbols.items()
-        if v.get("mcap_cr") and MCAP_MIN_CR <= v["mcap_cr"] <= MCAP_MAX_CR
+        if v.get("mcap_cr") and v["mcap_cr"] >= MCAP_MIN_CR
+        and (MCAP_MAX_CR is None or v["mcap_cr"] <= MCAP_MAX_CR)
     )
     with open("Stocks.csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["Symbol", "Company Name", "Industry", "MarketCap_Cr"])
         w.writerows(rows)
-    print(f"Stocks.csv written: {len(rows)} stocks in "
-          f"{MCAP_MIN_CR}-{MCAP_MAX_CR} Cr band")
+    print(f"Stocks.csv written: {len(rows)} stocks (>= {MCAP_MIN_CR} Cr, no upper cap)")
 
 
 if __name__ == "__main__":

@@ -161,6 +161,28 @@ Tranching doesn't predict the lucky phase — it averages the luck away
 (diversification across time). Optional for A (CAGR-neutral, smoother
 Sharpe); clearly positive for the B core.
 
+## Market-cap scope & regime-switch study (v2.2)
+
+**Cap-free universe test** (1,285 symbols incl. large caps, vs the
+banded 982):
+
+| | Banded CAGR/DD | Cap-free CAGR/DD | Verdict |
+|---|---|---|---|
+| A v2 (N5) | 62.3% / −42.0% | **64.9% / −37.0%**, MAR 1.48→1.76, wins 2/3 eras | ✅ A goes cap-free |
+| B v2 core (N10) | **43.3% / −34.5%** | 39.1% / −36.5%, era-2 collapses 43.0→30.3 | ❌ B keeps the band |
+
+Mechanism: B's return÷vol score over-rewards smooth mega-caps, displacing
+the mid-cap trends that drive the core's edge; A's raw-return score only
+picks a large cap when it is genuinely ripping, and those pass the gap
+filter cleanly. Floor stays 1,000 Cr (untested microcap costs below).
+
+**Breadth-based A/B switching** (use A score when breadth > T, else B;
+N10, banded): T=55% → 45.0%/−33.7% (eras 22.6/50.2/65.4); T=60% → 42.9%;
+T=65% → 42.3%; T=70% → 39.8%. Best case +1.7 pts vs pure B — inside the
+±4 pt rebalance-timing-luck band, threshold-sensitive, and degrades the
+worst era (22.6 vs 27.5). REJECTED. Running A and B as parallel books is
+the robust form of the same idea.
+
 ## Known limitations (unchanged from v1)
 
 - Survivorship bias: absolute CAGRs are inflated; use the README's

@@ -200,7 +200,10 @@ GAP_PCT = 0.15          # Strategy A: exclude stocks with any daily move >15%
 GAP_WINDOW = 90         # ...within the last 90 trading days
 
 
-def compute_rankings(prices: pd.DataFrame):
+B_MCAP_MIN, B_MCAP_MAX = 1000, 25000     # band applies to Strategy B only
+
+
+def compute_rankings(prices: pd.DataFrame, mcap: pd.Series = None):
     """Return (df_A, df_B, regime_on, regime_info) — v2 signals."""
     stocks = prices.drop(columns=[BENCH_SYMBOL], errors="ignore")
     pxs = stocks.ffill(limit=5)
@@ -244,6 +247,12 @@ def compute_rankings(prices: pd.DataFrame):
     # MaxDD −36.3%→−34.5%, Sharpe 1.33→1.68 — and it won ALL 3 eras.
     dfB = base.dropna(subset=["6M %", "12−1M %"]).copy()
     dfB = dfB[(dfB["Vol %"] > 0)]
+    # Cap band for B ONLY (validated: cap-free diluted the vol-adjusted
+    # core, CAGR 43.3%→39.1%; cap-free IMPROVED fast A, 62.3%→64.9% with
+    # lower DD — so A ranks the whole list, B stays 1,000–25,000 Cr).
+    if mcap is not None:
+        mc = mcap.reindex(dfB.index)
+        dfB = dfB[mc.between(B_MCAP_MIN, B_MCAP_MAX) | mc.isna()]
     v6 = vol6.reindex(dfB.index) * 100
     dfB["Score"] = (0.5 * dfB["6M %"] / v6.clip(lower=1)
                     + 0.5 * dfB["12−1M %"] / dfB["Vol %"].clip(lower=1))
@@ -502,7 +511,9 @@ st.sidebar.markdown(f"**{len(uni)} stocks loaded**")
 prices, src = fetch_prices(tuple(uni["Symbol"].tolist()))
 st.sidebar.caption(f"Data: 🟦 Upstox {src['upstox']} · 🟨 Yahoo "
                    f"{src['yahoo']} · ⚫ no data {src['missing']}")
-dfA, dfB, regime_on, bi = compute_rankings(prices)
+mcap_s = (uni.set_index("Symbol")["MarketCap_Cr"]
+          if "MarketCap_Cr" in uni.columns else None)
+dfA, dfB, regime_on, bi = compute_rankings(prices, mcap_s)
 
 name_map = uni.set_index("Symbol")
 for df in (dfA, dfB):
@@ -582,7 +593,9 @@ with tabA:
                  f"(0.5×1M + 0.5×3M) · Top {top_n}")
     st.caption("Stocks with any daily move >15% in the last 90 days are "
                "auto-excluded (anti-speculation rule — cut MaxDD by ~7 pts "
-               "in the 15y re-validation with the same MAR). "
+               "in the 15y re-validation with the same MAR). Ranks the FULL list — "
+               "no market-cap band (cap-free tested better for A: 64.9% vs "
+               "62.3% CAGR with LOWER drawdown). "
                "Rebalance fortnightly per tranche — see Manual §4 tranching.")
     d = dfA.copy()
     d["Zone"] = zone_col(d, top_n, buffer)
@@ -601,8 +614,15 @@ with tabB:
                "averaged over 6M and 12−1M lookbacks (NSE-momentum-index / "
                "Barroso–Santa-Clara style). 15y re-validation vs plain 12−1: "
                "CAGR 34.0%→43.3%, MaxDD −36.3%→−34.5%, Sharpe 1.33→1.68, "
-               "and it won all three 5-year eras. RECOMMENDED core, N=10. "
+               "and it won all three 5-year eras. Band-limited to 1,000–25,000 Cr "
+               "(cap-free tested WORSE for this signal: 39.1% vs 43.3%). "
+               "RECOMMENDED core, N=10. "
                "Rebalance fortnightly per tranche — see Manual §4 tranching.")
+    if mcap_s is None:
+        st.warning("⚠️ Your CSV has no MarketCap_Cr column — Strategy B is "
+                   "running CAP-FREE, which backtested 4 pts worse. Add the "
+                   "column (run make_universe.py) to restore the "
+                   "1,000–25,000 Cr band.")
     d = dfB.copy()
     d["Zone"] = zone_col(d, top_n, buffer)
     cols = ["Rank", "Zone", "Industry", "CMP", "6M %", "12−1M %", "Vol %",

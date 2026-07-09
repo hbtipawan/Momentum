@@ -45,6 +45,23 @@ automatically — you never compute anything by hand.
 
 ---
 
+## 2b. Market-cap scope (v2.2)
+
+- **Strategy A ranks the FULL list — no market-cap band.** Cap-free
+  tested BETTER for fast momentum: 64.9% vs 62.3% CAGR with a LOWER
+  drawdown (−37.0% vs −42.0%), winning 2 of 3 eras. Large caps that pass
+  the gap filter are clean runners; let them compete.
+- **Strategy B stays band-limited to 1,000–25,000 Cr**, applied
+  automatically in-app from the CSV's MarketCap_Cr column. Cap-free
+  tested WORSE for the vol-adjusted core (39.1% vs 43.3%): smooth large
+  caps score well on return÷volatility and displace punchier midcaps.
+- Universe floor stays 1,000 Cr everywhere — below that, costs, circuit
+  limits and manipulation risk are untested territory.
+- `make_universe.py` now pulls Nifty 100 + Midcap 150 + Smallcap 250 +
+  Microcap 250 with no upper cap. Keep the MarketCap_Cr column in the
+  CSV — B's band needs it (if the column is missing, B runs cap-free
+  and tells you).
+
 ## 3. The rules (locked)
 
 - **Positions**: Top N equal-weight (default A=5, B=10; the sidebar lets you
@@ -214,6 +231,14 @@ banner.
 **Q: Can I skip a stock I don't like and take rank 6 instead?**
 No. The moment discretion enters, the backtest no longer describes your
 system.
+
+**Q: Should I run A when breadth is high and B when it's moderate?**
+Tested — no. Switching signals at breadth thresholds (55/60/65/70%) added
+at most +1.7 pts at the best threshold, was threshold-sensitive, and made
+the WORST era worse (22.6% vs 27.5% in 2011–16). That gain is inside the
+timing-luck band. Running both books in parallel IS the regime
+diversification — A dominates hot tapes, B carries the grind, no fragile
+threshold needed.
 
 **Q: Shouldn't I rebalance on Friday to front-run the Monday crowd?**
 Tested — no. Friday's apparent edge on Strategy A was concentrated in a
