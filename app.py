@@ -22,6 +22,7 @@ import io
 import json
 import datetime as dt
 import urllib.request
+import urllib.parse
 import concurrent.futures
 
 import numpy as np
@@ -71,7 +72,57 @@ def load_universe(uploaded) -> pd.DataFrame:
 
 
 # ------------------------------------------------------------------ data
-def _fetch_one(sym: str, rng: str = "3y"):   # 3y: 12−1 lag + 252d vol need ~504 bars
+# Primary source: Upstox historical-candle API (free, no auth) — better
+# coverage than Yahoo, especially recent listings (~150 extra symbols).
+# Fallback: Yahoo Finance v8 chart API per symbol.
+UPSTOX_MASTER_URL = ("https://assets.upstox.com/market-quote/instruments/"
+                     "exchange/NSE.csv.gz")
+NIFTY500_UPSTOX_KEY = "NSE_INDEX|Nifty 500"
+DATA_DAYS = 3 * 365          # 12−1 lag + 252d vol need ~504 bars
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def load_upstox_keys() -> dict:
+    """{tradingsymbol -> instrument_key} for NSE equities (cached daily).
+    Returns {} on failure → app runs in pure-Yahoo mode."""
+    import gzip
+    try:
+        req = urllib.request.Request(UPSTOX_MASTER_URL, headers=HEADERS)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read()
+        df = pd.read_csv(io.BytesIO(gzip.decompress(raw)))
+        eq = df[(df["exchange"] == "NSE_EQ")
+                & (df["instrument_type"] == "EQUITY")]
+        return dict(zip(eq["tradingsymbol"].astype(str),
+                        eq["instrument_key"].astype(str)))
+    except Exception:
+        return {}
+
+
+def _fetch_upstox(sym: str, key: str):
+    """Daily closes from Upstox v3 historical-candle (no auth needed)."""
+    to = dt.date.today().isoformat()
+    frm = (dt.date.today() - dt.timedelta(days=DATA_DAYS)).isoformat()
+    url = (f"https://api.upstox.com/v3/historical-candle/"
+           f"{urllib.parse.quote(key)}/days/1/{to}/{frm}")
+    try:
+        req = urllib.request.Request(
+            url, headers={"Accept": "application/json", **HEADERS})
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            d = json.load(resp)
+        candles = d["data"]["candles"]            # newest first
+        if not candles:
+            return None
+        idx = (pd.to_datetime([c[0] for c in candles])
+               .tz_localize(None).normalize())
+        s = pd.Series([c[4] for c in candles], index=idx, name=sym).dropna()
+        s = s[~s.index.duplicated(keep="last")].sort_index()
+        return s if len(s) else None
+    except Exception:
+        return None
+
+
+def _fetch_yahoo(sym: str, rng: str = "3y"):
     ysym = sym if sym.startswith("%5E") else f"{sym}.NS"
     url = (f"https://query1.finance.yahoo.com/v8/finance/chart/"
            f"{ysym}?range={rng}&interval=1d")
@@ -83,28 +134,61 @@ def _fetch_one(sym: str, rng: str = "3y"):   # 3y: 12−1 lag + 252d vol need ~5
         s = pd.Series(r["indicators"]["quote"][0]["close"],
                       index=pd.to_datetime(r["timestamp"], unit="s").normalize(),
                       name=sym).dropna()
-        return sym, s[~s.index.duplicated(keep="last")]
+        return s[~s.index.duplicated(keep="last")]
     except Exception:
         return None
 
 
+FULL_HISTORY_BARS = 600      # ~3y of NSE sessions minus holidays
+
+
+def _fetch_one(sym: str, keys: dict):
+    """Upstox first; if its history is incomplete (e.g. instrument-key reset
+    after a relisting), also try Yahoo and keep the LONGER series — a short
+    series silently drops the stock from the 12-month rankings.
+    Returns (sym, series, source) or None."""
+    if sym == BENCH_SYMBOL:
+        s = _fetch_upstox(sym, NIFTY500_UPSTOX_KEY)
+        if s is not None and len(s) > 50:
+            return sym, s, "upstox"
+        s = _fetch_yahoo(sym)
+        return (sym, s, "yahoo") if s is not None else None
+    key = keys.get(sym)
+    s_up = _fetch_upstox(sym, key) if key else None
+    if s_up is not None and len(s_up) >= FULL_HISTORY_BARS:
+        return sym, s_up, "upstox"
+    s_y = _fetch_yahoo(sym)
+    n_up = len(s_up) if s_up is not None else 0
+    n_y = len(s_y) if s_y is not None else 0
+    if n_up == 0 and n_y == 0:
+        return None
+    return (sym, s_up, "upstox") if n_up >= n_y else (sym, s_y, "yahoo")
+
+
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
-def fetch_prices(symbols: tuple) -> pd.DataFrame:
-    series = {}
-    prog = st.progress(0.0, text="Fetching prices…")
+def fetch_prices(symbols: tuple):
+    keys = load_upstox_keys()
+    series, src_count = {}, {"upstox": 0, "yahoo": 0, "missing": 0}
+    prog = st.progress(0.0, text="Fetching prices (Upstox → Yahoo fallback)…")
     todo = list(symbols) + [BENCH_SYMBOL]
     with concurrent.futures.ThreadPoolExecutor(max_workers=16) as ex:
-        futures = {ex.submit(_fetch_one, s): s for s in todo}
+        futures = {ex.submit(_fetch_one, s, keys): s for s in todo}
         done = 0
         for fut in concurrent.futures.as_completed(futures):
             res = fut.result()
             if res:
                 series[res[0]] = res[1]
+                src_count[res[2]] += 1
+            else:
+                src_count["missing"] += 1
             done += 1
             if done % 25 == 0:
                 prog.progress(done / len(todo), text=f"Fetching… {done}/{len(todo)}")
     prog.empty()
-    return pd.DataFrame(series).sort_index()
+    if not keys:
+        st.warning("⚠️ Upstox instrument master unavailable — running on "
+                   "Yahoo Finance only this session.")
+    return pd.DataFrame(series).sort_index(), src_count
 
 
 # ------------------------------------------------------------------ signals
@@ -265,7 +349,9 @@ with st.sidebar:
 
 uni = load_universe(up)
 st.sidebar.markdown(f"**{len(uni)} stocks loaded**")
-prices = fetch_prices(tuple(uni["Symbol"].tolist()))
+prices, src = fetch_prices(tuple(uni["Symbol"].tolist()))
+st.sidebar.caption(f"Data: 🟦 Upstox {src['upstox']} · 🟨 Yahoo "
+                   f"{src['yahoo']} · ⚫ no data {src['missing']}")
 dfA, dfB, regime_on, bi = compute_rankings(prices)
 
 name_map = uni.set_index("Symbol")
@@ -430,5 +516,6 @@ with tabManual:
         st.warning("MANUAL.md not found in repo.")
 
 st.divider()
-st.caption("Data: Yahoo Finance (delayed) · Backtest details in repo README · "
+st.caption("Data: Upstox historical API (primary) with Yahoo Finance "
+           "fallback · Backtest details in repo README & RESEARCH_NOTES · "
            "Research tool, not investment advice.")

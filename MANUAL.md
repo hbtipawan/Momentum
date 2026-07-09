@@ -135,6 +135,13 @@ From the 15-year re-validation (survivorship-bias-adjusted expectations):
 
 ## 7. FAQ
 
+**Q: Where does the price data come from?**
+Upstox's free historical API first (no login needed), Yahoo Finance as
+fallback — and whichever has the LONGER history wins per stock. The
+sidebar shows how many symbols came from each source. If the Upstox
+instrument master is unreachable, the app warns you and runs pure-Yahoo
+for that session.
+
 **Q: The app shows different ranks than yesterday — did it break?**
 No. Ranks move daily with prices. Only the 2nd-Monday snapshot matters.
 

@@ -32,6 +32,14 @@ core still backtested at 40.7% CAGR. Not investment advice.
 2. [share.streamlit.io](https://share.streamlit.io) → New app → select repo →
    main file `app.py` → Deploy.
 
+## Data sources
+- **Primary: Upstox historical-candle API** (free, no auth, no API key) —
+  better coverage than Yahoo, including ~150 recent listings Yahoo misses.
+- **Fallback: Yahoo Finance** per symbol. If Upstox returns a truncated
+  history (instrument-key resets after relistings), the app fetches both
+  and keeps the longer series so no stock silently drops out of the
+  12-month rankings. The sidebar shows the per-source counts each session.
+
 ## Universe (`Stocks.csv`)
 - Required column: `Symbol` (NSE symbols, no `.NS` suffix).
 - Optional: `Company Name`, `Industry`, `MarketCap_Cr`.
