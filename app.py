@@ -281,6 +281,35 @@ def compute_rankings(prices: pd.DataFrame):
     return dfA, dfB, regime_on, regime_info
 
 
+# --------------------------------------------------- risk-off sleeve
+# When breadth ≤50% the book goes risk-off. Instead of 0% cash, the
+# validated sleeve is: GOLDBEES while gold is above its own 200DMA,
+# otherwise a liquid/arbitrage fund. 15y evidence in RESEARCH_NOTES.md:
+# B v2 core CAGR 43.3%→59.9% at the SAME MaxDD; won all three eras.
+GOLD_SYMBOL = "GOLDBEES"
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def gold_sleeve_status(cache_key: str) -> dict:
+    """Gold trend check for the risk-off sleeve. Splices split artifacts
+    (|daily move|>50%) that Yahoo leaves unadjusted for Indian ETFs."""
+    keys = load_upstox_keys()
+    res = _fetch_one(GOLD_SYMBOL, keys)
+    if res is None or len(res[1]) < 220:
+        return {}
+    s = res[1]
+    r = s.pct_change()
+    r[r.abs() > 0.5] = 0.0
+    clean = (1 + r.fillna(0)).cumprod()
+    dma = clean.rolling(200, min_periods=150).mean()
+    if np.isnan(dma.iloc[-1]):
+        return {}
+    up = bool(clean.iloc[-1] > dma.iloc[-1])
+    dist = (clean.iloc[-1] / dma.iloc[-1] - 1) * 100
+    return {"up": up, "dist": round(dist, 1), "price": round(s.iloc[-1], 2),
+            "date": str(s.index[-1].date()), "source": res[2]}
+
+
 # ------------------------------------------------------- YTD tracker
 # Simulates each book with the full locked rules (rebalance 1st & 3rd
 # Monday, buffer 1.75N, 30% stop, daily breadth regime with 2-day confirm,
@@ -496,16 +525,35 @@ if regime_on:
                 f'{entry_note} Check this banner DAILY.</div>',
                 unsafe_allow_html=True)
 else:
+    gs = gold_sleeve_status(cache_key=bi["date"])
+    if gs and gs["up"]:
+        sleeve_note = (f" 💰 PARK the freed cash in GOLDBEES (gold is "
+                       f"{gs['dist']:+.1f}% vs its 200DMA — uptrend intact).")
+    elif gs:
+        sleeve_note = (f" 🏦 PARK the freed cash in a LIQUID/ARBITRAGE fund "
+                       f"(gold is {gs['dist']:+.1f}% vs its 200DMA — "
+                       f"downtrend, do NOT hold GOLDBEES).")
+    else:
+        sleeve_note = " 🏦 PARK the freed cash in a LIQUID/ARBITRAGE fund."
     st.markdown(f'<div class="big-red">🔴 REGIME: RISK-OFF — universe breadth '
                 f'{bi["breadth"]}% ({bi["n_above"]} of {bi["n_total"]} stocks '
                 f'above their own 200DMA, below the 50% threshold). '
                 f'RULE: sell ALL positions TODAY (at close or next open) — do '
-                f'NOT wait for rebalance day. Re-enter only at the next '
-                f'scheduled rebalance once breadth is back above 50%.</div>',
+                f'NOT wait for rebalance day.{sleeve_note} Re-entry: after 2 '
+                f'consecutive daily closes with breadth above 50%, sell the '
+                f'sleeve and buy the full book the SAME day (this banner '
+                f'counts the green days).</div>',
                 unsafe_allow_html=True)
 st.caption(f"Prices as of {bi['date']} · regime checked DAILY (exit same day "
            f"breadth closes below 50%) · trailing stop {int(STOP_PCT*100)}% "
            f"from post-entry peak, checked daily")
+if regime_on:
+    gs = gold_sleeve_status(cache_key=bi["date"])
+    if gs:
+        st.caption(f"Risk-off sleeve (for when the banner turns RED): gold is "
+                   f"{'ABOVE' if gs['up'] else 'BELOW'} its 200DMA "
+                   f"({gs['dist']:+.1f}%) → freed cash would go to "
+                   f"{'GOLDBEES' if gs['up'] else 'a liquid/arbitrage fund'}.")
 
 # ---- YTD tracker: simulated book performance vs benchmark ----
 ytd = ytd_tracker(prices, top_n, cache_key=f"{bi['date']}|{top_n}")

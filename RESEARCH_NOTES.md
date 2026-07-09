@@ -91,6 +91,33 @@ be checked against evidence before touching the locked rules.
   the ranking than on top of the equity curve, because the breadth regime
   filter already does the de-risking that vol-targeting duplicates.
 
+## Risk-off sleeve study (added after v2)
+
+Question: when breadth ≤50% (book is out of equities ~45% of the time),
+what should the cash do? Tested on both adopted books, same engine,
+0.25%/side on sleeve flips (~7/year). GOLDBEES data was split-spliced
+(Yahoo leaves Indian ETF splits unadjusted — raw data showed a fake −99%
+day; two artifacts removed, worst clean day −10.5%).
+
+| Sleeve while RED | B v2 core CAGR/MaxDD/MAR | A v2 CAGR/MaxDD/MAR |
+|---|---|---|
+| Idle cash (v2 default) | 43.3% / −34.5% / 1.26 | 62.3% / −42.0% / 1.48 |
+| Liquid fund (6%) | 47.1% / −32.7% / 1.44 | 66.6% / −40.5% / 1.64 |
+| GOLDBEES always | 57.2% / −36.5% / 1.57 | 78.1% / −41.7% / 1.87 |
+| **GOLDBEES if gold>200DMA else liquid** ✅ | **59.9% / −34.5% / 1.74** | **81.1% / −41.4% / 1.96** |
+
+Era robustness of the adopted sleeve (B v2 core, CAGR/MaxDD):
+2011–16: 40.3%/−28.3% (vs 27.5%/−29.7% cash) · 2016–21: 60.3%/−27.9%
+(vs 43.0%/−27.6%) · 2021–26: 81.5%/−34.5% (vs 61.1%/−34.5%). Won all
+three eras. YTD 2026: −4.7% (cash) → +7.2% (sleeve).
+
+ADOPTED: gold-with-trend-check sleeve. REJECTED: gold-always (loses to
+the trend-checked version in gold's 2013–15 bear and carries gold's own
+drawdown into the book: −36.5% vs −34.5%). Caveats: gold's 2024–26 run
+flatters the recent era (though the sleeve also won 2011–16); gold ETF
+taxation differs from equity; sleeve results assume same-day execution
+of regime flips.
+
 ## Known limitations (unchanged from v1)
 
 - Survivorship bias: absolute CAGRs are inflated; use the README's

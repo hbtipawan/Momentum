@@ -64,6 +64,17 @@ automatically — you never compute anything by hand.
   same day — don't wait for Monday. Long cash spells are normal, not a bug
   (the book sat ~100% cash through most of 2019 — that flat year IS the
   drawdown protection working).
+- **Risk-off sleeve (what the cash does while the banner is RED)**: the
+  freed capital does NOT sit idle. The rule, shown live on the banner:
+  - if GOLDBEES is ABOVE its own 200DMA → park 100% of it in **GOLDBEES**;
+  - if GOLDBEES is BELOW its 200DMA → park it in a **liquid/arbitrage
+    fund** instead. Never hold gold against its own downtrend.
+  When the 2-day-confirm re-entry fires, sell the sleeve and buy the full
+  equity book the same day. 15y evidence (RESEARCH_NOTES.md): this sleeve
+  lifted the core book's CAGR from 43.3% to 59.9% at the SAME worst
+  drawdown, and it won all three 5-year eras — gold tends to rally in
+  exactly the risk-off windows when breadth fails, and the 200DMA check
+  keeps you out of gold's own bear phases (e.g. 2013–15).
 - **Never leverage. Never average down. A stopped-out stock may only
   re-enter at a future rebalance if it ranks Top N again.**
 
@@ -86,6 +97,16 @@ Do this on the **1st and 3rd Monday of each month**, after 9:30am IST:
 5. **Download the new portfolio.json** and store it (Drive/email to
    yourself). This file carries your entry dates — the stop tracker
    needs it.
+
+### The YTD strip (under the regime banner)
+Three tiles show the simulated year-to-date result of **A v2**, **B v2**
+(both at your sidebar's Top-N) and the **Nifty 500**, with each one's
+worst drawdown this year. It is a *discipline gauge*, not your live P&L:
+it assumes perfect rule-following at 0.25%/side. Two rules for reading it:
+(1) if the books trail the index in a RED/choppy year but with smaller
+drawdowns, the system is WORKING — do not tinker; (2) never judge the
+strategy on this strip — the edge is measured in 3-year windows, not
+calendar half-years.
 
 ### Daily (2 minutes — NOT optional)
 Open the app once a day, after 3pm IST or in the evening:
@@ -174,6 +195,14 @@ banner.
 **Q: Can I skip a stock I don't like and take rank 6 instead?**
 No. The moment discretion enters, the backtest no longer describes your
 system.
+
+**Q: Why gold and not just a liquid fund when RED?**
+Both were backtested. Liquid-only added ~4 pts CAGR over idle cash;
+gold-with-trend-check added ~17 pts at the same drawdown, because equity
+risk-off and gold rallies overlap (2011, 2016, 2020, 2022, 2025–26). The
+trend check matters: holding gold ALWAYS during RED was worse in 2011–16
+(gold's own bear) — the 200DMA switch is what makes it robust. Note gold
+ETF taxation differs from equity; check the current rules with your CA.
 
 **Q: What about volatility targeting / tighter stops / gap filter on B?**
 All tested in the Jul 2026 study and REJECTED — see `RESEARCH_NOTES.md`
