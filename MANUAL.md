@@ -42,9 +42,22 @@ you run both.
 - **Trailing stop**: **30% below the highest close since YOUR entry**,
   checked daily. If breached → sell at the next open. No exceptions,
   no "waiting for a bounce".
-- **Regime filter**: if the banner is **🔴 RED** (Nifty 500 below its 200DMA)
-  → sell everything at the rebalance and stay in cash. Re-enter fully when
-  the banner turns 🟢 GREEN. Do not cherry-pick.
+- **Regime filter (universe breadth, checked DAILY)**: the app measures what
+  fraction of YOUR universe's stocks close above their own 200-day moving
+  average. Risk-on requires **more than 50%**. If the banner turns **🔴 RED**
+  → **sell everything the SAME day** (at close or next morning's open) — do
+  NOT wait for rebalance day. **Re-entry (2-day confirm rule)**: once breadth
+  has closed above 50% for **2 consecutive days**, re-enter the full book the
+  same day — don't wait for Monday. (15-year backtest: this fast re-entry
+  added ~1% CAGR AND cut MaxDD from −34% to −31% vs waiting for rebalance
+  day; 3- and 5-day confirms tested worse.) Do not cherry-pick.
+  *Why breadth instead of a Nifty index?* Your universe is equal-weight and
+  small/midcap-heavy; a cap-weighted index can stay green while the median
+  stock is already in a bear market. In the 15-year backtest the breadth
+  gauge with same-day exit cut the worst drawdown to −29% (vs −40% for the
+  Nifty-500 gauge) and held it to −19% through the 2018–20 smallcap bear,
+  with Sharpe 1.52. It flips ~7×/year and keeps you invested only ~55% of
+  the time — long cash spells are normal, not a bug.
 - **Never leverage. Never average down. A stopped-out stock may only
   re-enter at a future rebalance if it ranks Top N again.**
 
@@ -55,7 +68,8 @@ you run both.
 Do this on the **1st and 3rd Monday of each month**, after 9:30am IST:
 
 1. Open the app. Note the **regime banner** first.
-   - 🔴 RED → sell all, download portfolio.json, done. Skip steps 2–5.
+   - 🔴 RED → you should already be in cash (the daily rule below); if
+     anything is still held, sell it now. Skip steps 2–5.
 2. Open your strategy tab (A or B). The ranking is live.
 3. Go to **Rotation Actions** → upload last time's `portfolio.json`
    (or paste your holdings).
@@ -67,10 +81,15 @@ Do this on the **1st and 3rd Monday of each month**, after 9:30am IST:
    yourself). This file carries your entry dates — the stop tracker
    needs it.
 
-### Daily (2 minutes, optional but recommended)
-Open the **Stop-Loss Tracker** tab, upload portfolio.json. If any row says
-**🔴 STOP HIT — SELL**, sell that stock at the next open. Between
-rebalances the freed cash just sits idle — do not redeploy it early.
+### Daily (2 minutes — NOT optional)
+Open the app once a day, after 3pm IST or in the evening:
+1. **Regime banner**: if it turned 🔴 RED today → sell ALL positions at the
+   close or tomorrow's open. This same-day exit is what earns the drawdown
+   protection — waiting for rebalance day gave up 2–7% extra drawdown in
+   the backtest.
+2. **Stop-Loss Tracker** tab, upload portfolio.json. Any row with
+   **🔴 STOP HIT — SELL** → sell at the next open.
+Between rebalances, freed cash sits idle — do not redeploy it early.
 
 ---
 
@@ -119,8 +138,15 @@ No — buffer band keeps it while rank ≤ 8… rank 9 is outside → it becomes
 Sell anyway, next open. Stops are daily; rotation is fortnightly.
 
 **Q: Regime turned RED mid-week?**
-The regime rule is checked only on rebalance Mondays. Your 30% stops
-protect you between rebalances.
+Sell everything the same day (close or next open). The backtest showed
+same-day exit beats waiting for rebalance day. Re-entry uses the 2-day
+confirm: the second consecutive close with breadth above 50%, buy the
+full book that day. The app banner counts the green days for you.
+
+**Q: The banner flips GREEN then RED within a few days — whipsaw?**
+Yes, it happens (~7 flips/year historically). Take the small costs; they
+are the insurance premium that kept the worst drawdown at −29% over 15
+years. Never second-guess the banner.
 
 **Q: Can I skip a stock I don't like and take rank 6 instead?**
 No. The moment discretion enters, the backtest no longer describes your

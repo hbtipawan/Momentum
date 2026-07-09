@@ -101,10 +101,13 @@ def fetch_prices(symbols: tuple) -> pd.DataFrame:
 
 
 # ------------------------------------------------------------------ signals
+MIN_PRICE = 20          # user rule: closing price must exceed Rs 20
+BREADTH_THRESHOLD = 0.50  # risk-on when >50% of universe above own 200DMA
+
+
 def compute_rankings(prices: pd.DataFrame):
-    """Return (df_A, df_B, regime_on, bench_info)."""
-    bench = prices[BENCH_SYMBOL].dropna()
-    stocks = prices.drop(columns=[BENCH_SYMBOL])
+    """Return (df_A, df_B, regime_on, regime_info)."""
+    stocks = prices.drop(columns=[BENCH_SYMBOL], errors="ignore")
 
     def lag_price(k):
         return stocks.apply(lambda col: col.dropna().iloc[-k - 1]
@@ -120,6 +123,7 @@ def compute_rankings(prices: pd.DataFrame):
 
     base = pd.DataFrame({"CMP": last, "1M %": r1m, "3M %": r3m,
                          "12−1M %": r12_1})
+    base = base[base["CMP"] > MIN_PRICE]     # price filter (user rule)
 
     dfA = base.dropna(subset=["1M %", "3M %"]).copy()
     dfA["Score"] = 0.5 * dfA["1M %"] + 0.5 * dfA["3M %"]
@@ -131,12 +135,35 @@ def compute_rankings(prices: pd.DataFrame):
     dfB = dfB.sort_values("Score", ascending=False)
     dfB["Rank"] = range(1, len(dfB) + 1)
 
-    dma200 = bench.rolling(200).mean().iloc[-1]
-    regime_on = bool(bench.iloc[-1] >= dma200) if not np.isnan(dma200) else True
-    bench_info = dict(level=round(float(bench.iloc[-1]), 1),
-                      dma=round(float(dma200), 1) if not np.isnan(dma200) else None,
-                      date=str(bench.index[-1].date()))
-    return dfA, dfB, regime_on, bench_info
+    # ---- REGIME: universe internal breadth (15y-validated) ----
+    # Risk-on when >50% of the universe's stocks close above their own 200DMA.
+    # Backtest (2011-2026): MAR 1.33 & Sharpe 1.52 with DAILY exit — cut MaxDD
+    # to -29% vs -40% for the Nifty500-200DMA gauge, incl. -19% vs -40% in
+    # the 2018-20 smallcap bear.
+    dma = stocks.rolling(200, min_periods=150).mean()
+    pxf = stocks.ffill(limit=5)
+    have = pxf.notna() & dma.notna()
+    breadth_series = (((pxf > dma) & have).sum(axis=1)
+                      / have.sum(axis=1).clip(lower=1)).tail(5)
+    breadth = float(breadth_series.iloc[-1])
+    regime_on = breadth > BREADTH_THRESHOLD
+
+    # consecutive days above threshold (for the 2-day-confirm fast re-entry)
+    green_run = 0
+    for v in breadth_series[::-1]:
+        if v > BREADTH_THRESHOLD:
+            green_run += 1
+        else:
+            break
+
+    last_have = have.iloc[-1]
+    regime_info = dict(breadth=round(breadth * 100, 1),
+                       n_above=int(((pxf.iloc[-1] > dma.iloc[-1]) & last_have).sum()),
+                       n_total=int(last_have.sum()),
+                       green_run=green_run,
+                       history=[round(v * 100, 1) for v in breadth_series],
+                       date=str(stocks.dropna(how="all").index[-1].date()))
+    return dfA, dfB, regime_on, regime_info
 
 
 def zone_col(df, top_n, buffer):
@@ -214,17 +241,31 @@ for df in (dfA, dfB):
     if "Industry" in name_map.columns:
         df.insert(0, "Industry", [name_map["Industry"].get(s, "") for s in df.index])
 
-# ---- regime banner ----
+# ---- regime banner: universe breadth (daily-exit rule) ----
 if regime_on:
-    st.markdown(f'<div class="big-green">🟢 REGIME: RISK-ON — Nifty 500 '
-                f'({bi["level"]}) is ABOVE its 200DMA ({bi["dma"]}). '
-                f'Strategy positions are active.</div>', unsafe_allow_html=True)
+    entry_note = ("" if bi["green_run"] >= 3 else
+                  (" ⚡ Breadth has now been above 50% for 2 consecutive days "
+                   "— if you are in CASH, ENTER TODAY (validated fast "
+                   "re-entry rule), don't wait for Monday."
+                   if bi["green_run"] == 2 else
+                   " ⏳ First day above 50% — wait for one more green close "
+                   "before re-entering (2-day confirm)."))
+    st.markdown(f'<div class="big-green">🟢 REGIME: RISK-ON — universe breadth '
+                f'{bi["breadth"]}% ({bi["n_above"]} of {bi["n_total"]} stocks '
+                f'above their own 200DMA, threshold 50%; '
+                f'{bi["green_run"]} consecutive green day(s)).'
+                f'{entry_note} Check this banner DAILY.</div>',
+                unsafe_allow_html=True)
 else:
-    st.markdown(f'<div class="big-red">🔴 REGIME: RISK-OFF — Nifty 500 '
-                f'({bi["level"]}) is BELOW its 200DMA ({bi["dma"]}). '
-                f'Rule: move to CASH at the next rebalance. Do NOT take new '
-                f'entries.</div>', unsafe_allow_html=True)
-st.caption(f"Prices as of {bi['date']} · trailing stop {int(STOP_PCT*100)}% "
+    st.markdown(f'<div class="big-red">🔴 REGIME: RISK-OFF — universe breadth '
+                f'{bi["breadth"]}% ({bi["n_above"]} of {bi["n_total"]} stocks '
+                f'above their own 200DMA, below the 50% threshold). '
+                f'RULE: sell ALL positions TODAY (at close or next open) — do '
+                f'NOT wait for rebalance day. Re-enter only at the next '
+                f'scheduled rebalance once breadth is back above 50%.</div>',
+                unsafe_allow_html=True)
+st.caption(f"Prices as of {bi['date']} · regime checked DAILY (exit same day "
+           f"breadth closes below 50%) · trailing stop {int(STOP_PCT*100)}% "
            f"from post-entry peak, checked daily")
 
 tabA, tabB, tabRot, tabStop, tabManual = st.tabs(
@@ -286,8 +327,8 @@ with tabRot:
     if portfolio:
         if not regime_on:
             st.error("🔴 REGIME IS RISK-OFF → the rule says SELL EVERYTHING "
-                     "to cash at this rebalance. Table below shows what "
-                     "rotation WOULD be if you override the regime rule.")
+                     "TODAY, not at the next rebalance. Table below shows "
+                     "what rotation WOULD be if you override the regime rule.")
         act = rotation(df_use, list(portfolio), top_n, buffer)
         st.dataframe(act, use_container_width=True)
         today = str(dt.date.today())
