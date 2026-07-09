@@ -62,6 +62,21 @@ automatically — you never compute anything by hand.
   CSV — B's band needs it (if the column is missing, B runs cap-free
   and tells you).
 
+## 2c. Circuit-stock filter (v2.3, applies to BOTH strategies)
+
+Stocks that recently **locked at a LOWER circuit** (high = low on a down
+day — sellers trapped, nobody could exit) are auto-excluded: any stock
+with **2 or more down-locks in the last 90 sessions** is out of both
+rankings. The `Locks↓90d` column shows the count.
+
+Why only DOWN-locks? Because upper-circuit stocks ARE the momentum
+winners — a blanket circuit exclusion collapsed the backtest (B core
+43.3%→18.9% CAGR). The directional filter removes exactly the
+can't-exit headache and IMPROVES the system: B core 43.3→45.6% CAGR
+with MaxDD −34.5→−27.3%; A 62.3→71.0% with MaxDD −42.0→−35.9%. Robust
+across thresholds 1/2/3 and at double costs. A recently down-locked
+stock has proven it traps sellers — its forward returns are poor.
+
 ## 3. The rules (locked)
 
 - **Positions**: Top N equal-weight (default A=5, B=10; the sidebar lets you
@@ -231,6 +246,16 @@ banner.
 **Q: Can I skip a stock I don't like and take rank 6 instead?**
 No. The moment discretion enters, the backtest no longer describes your
 system.
+
+**Q: Can I just exclude ALL circuit/price-band stocks? They're a pain.**
+Tested — do NOT. Blanket exclusion destroyed returns (B: 43.3%→18.9%;
+A: 62.3%→28.3%) because smallcap momentum winners live in upper
+circuits. The system instead excludes only stocks with recent LOWER-
+circuit locks (the actual exit headache), which raises CAGR and cuts
+drawdown at the same time. For entries in stocks that hit an upper
+circuit on your buy day: place a limit order at the band; if unfilled by
+close, skip — the next rebalance re-ranks anyway. Never chase with
+market orders across circuit days.
 
 **Q: Should I run A when breadth is high and B when it's moderate?**
 Tested — no. Switching signals at breadth thresholds (55/60/65/70%) added

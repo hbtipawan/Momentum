@@ -183,6 +183,31 @@ T=65% → 42.3%; T=70% → 39.8%. Best case +1.7 pts vs pure B — inside the
 worst era (22.6 vs 27.5). REJECTED. Running A and B as parallel books is
 the robust form of the same idea.
 
+## Circuit-stock study (v2.3)
+
+Detection: lower-circuit lock day = high==low with close-to-close < −0.5%
+(data sanity: locked-day frequency 1.8% across the universe vs 0.66% in
+15,000+ Cr liquid names — real phenomenon, not artifacts; 12% of locked
+days are down-locks, 17% up-locks, the rest illiquid no-range days).
+
+| Filter (both books tested) | B v2 core | A v2 |
+|---|---|---|
+| None (baseline) | 43.3% / −34.5% / MAR 1.26 | 62.3% / −42.0% / 1.48 |
+| Exclude ANY locked day/90 | 13.7% / −42.6% / 0.32 ❌ | 16.4% / −37.3% / 0.44 ❌ |
+| Exclude >2 locked days/90 | 18.9% / −37.7% / 0.50 ❌ | 28.3% / −40.7% / 0.69 ❌ |
+| **Exclude ≥2 DOWN-locks/90** ✅ | **45.6% / −27.3% / 1.67** | **71.0% / −35.9% / 1.98** |
+
+Blanket circuit exclusion is catastrophic because upper-circuit stocks
+carry the momentum edge (26 of a sample day's top-30 ranks had locked
+days). The directional filter removes seller-trap names only. Threshold
+sensitivity: ≥1 / ≥2 / ≥3 all beat baseline on MAR (B: 1.31/1.67/1.59;
+A: 2.27/1.98/2.00) — not a knife-edge; ≥2 adopted. Survives 0.5%/side
+(B 42.6%/−30.4%; A 64.6%/−38.1%). Era note: B's era-3 CAGR gives up ~11
+pts (49.7 vs 61.1) in exchange for +17 pts in era-2 and 7 pts less
+drawdown overall; A wins eras 1 and 3 outright. This filter also makes
+the whole backtest MORE honest: close-price backtests silently assume
+you can exit stocks that were actually locked.
+
 ## Known limitations (unchanged from v1)
 
 - Survivorship bias: absolute CAGRs are inflated; use the README's

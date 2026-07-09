@@ -115,9 +115,14 @@ def _fetch_upstox(sym: str, key: str):
             return None
         idx = (pd.to_datetime([c[0] for c in candles])
                .tz_localize(None).normalize())
-        s = pd.Series([c[4] for c in candles], index=idx, name=sym).dropna()
-        s = s[~s.index.duplicated(keep="last")].sort_index()
-        return s if len(s) else None
+        df = pd.DataFrame({"close": [c[4] for c in candles],
+                           "high": [c[2] for c in candles],
+                           "low": [c[3] for c in candles]}, index=idx)
+        df = df.dropna(subset=["close"])
+        df = df[~df.index.duplicated(keep="last")].sort_index()
+        if not len(df):
+            return None
+        return df["close"].rename(sym), _downlocks_90(df)
     except Exception:
         return None
 
@@ -131,15 +136,32 @@ def _fetch_yahoo(sym: str, rng: str = "3y"):
         with urllib.request.urlopen(req, timeout=12) as resp:
             d = json.load(resp)
         r = d["chart"]["result"][0]
-        s = pd.Series(r["indicators"]["quote"][0]["close"],
-                      index=pd.to_datetime(r["timestamp"], unit="s").normalize(),
-                      name=sym).dropna()
-        return s[~s.index.duplicated(keep="last")]
+        q = r["indicators"]["quote"][0]
+        df = pd.DataFrame({"close": q["close"], "high": q["high"],
+                           "low": q["low"]},
+                          index=pd.to_datetime(r["timestamp"],
+                                               unit="s").normalize())
+        df = df.dropna(subset=["close"])
+        df = df[~df.index.duplicated(keep="last")].sort_index()
+        if not len(df):
+            return None
+        return df["close"].rename(sym), _downlocks_90(df)
     except Exception:
         return None
 
 
 FULL_HISTORY_BARS = 600      # ~3y of NSE sessions minus holidays
+DOWNLOCK_MAX = 1             # exclude stocks with >=2 lower-circuit locks/90d
+
+
+def _downlocks_90(df: pd.DataFrame) -> int:
+    """Count lower-circuit lock days (high==low on a down day) in the last
+    90 sessions — the 'can't exit' stocks. 15y evidence: excluding >=2
+    down-locks lifted B core CAGR 43.3→45.6% with MaxDD −34.5→−27.3%, and
+    A 62.3→71.0% with MaxDD −42.0→−35.9% (RESEARCH_NOTES.md)."""
+    t = df.tail(91)
+    r = t["close"].pct_change()
+    return int(((t["high"] == t["low"]) & (r < -0.005)).sum())
 
 
 def _fetch_one(sym: str, keys: dict):
@@ -148,27 +170,29 @@ def _fetch_one(sym: str, keys: dict):
     series silently drops the stock from the 12-month rankings.
     Returns (sym, series, source) or None."""
     if sym == BENCH_SYMBOL:
-        s = _fetch_upstox(sym, NIFTY500_UPSTOX_KEY)
-        if s is not None and len(s) > 50:
-            return sym, s, "upstox"
-        s = _fetch_yahoo(sym)
-        return (sym, s, "yahoo") if s is not None else None
+        r = _fetch_upstox(sym, NIFTY500_UPSTOX_KEY)
+        if r is not None and len(r[0]) > 50:
+            return sym, r[0], "upstox", 0
+        r = _fetch_yahoo(sym)
+        return (sym, r[0], "yahoo", 0) if r is not None else None
     key = keys.get(sym)
-    s_up = _fetch_upstox(sym, key) if key else None
-    if s_up is not None and len(s_up) >= FULL_HISTORY_BARS:
-        return sym, s_up, "upstox"
-    s_y = _fetch_yahoo(sym)
-    n_up = len(s_up) if s_up is not None else 0
-    n_y = len(s_y) if s_y is not None else 0
+    r_up = _fetch_upstox(sym, key) if key else None
+    if r_up is not None and len(r_up[0]) >= FULL_HISTORY_BARS:
+        return sym, r_up[0], "upstox", r_up[1]
+    r_y = _fetch_yahoo(sym)
+    n_up = len(r_up[0]) if r_up is not None else 0
+    n_y = len(r_y[0]) if r_y is not None else 0
     if n_up == 0 and n_y == 0:
         return None
-    return (sym, s_up, "upstox") if n_up >= n_y else (sym, s_y, "yahoo")
+    return ((sym, r_up[0], "upstox", r_up[1]) if n_up >= n_y
+            else (sym, r_y[0], "yahoo", r_y[1]))
 
 
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
 def fetch_prices(symbols: tuple):
     keys = load_upstox_keys()
-    series, src_count = {}, {"upstox": 0, "yahoo": 0, "missing": 0}
+    series, dlocks = {}, {}
+    src_count = {"upstox": 0, "yahoo": 0, "missing": 0}
     prog = st.progress(0.0, text="Fetching prices (Upstox → Yahoo fallback)…")
     todo = list(symbols) + [BENCH_SYMBOL]
     with concurrent.futures.ThreadPoolExecutor(max_workers=16) as ex:
@@ -179,6 +203,7 @@ def fetch_prices(symbols: tuple):
             if res:
                 series[res[0]] = res[1]
                 src_count[res[2]] += 1
+                dlocks[res[0]] = res[3]
             else:
                 src_count["missing"] += 1
             done += 1
@@ -188,7 +213,8 @@ def fetch_prices(symbols: tuple):
     if not keys:
         st.warning("⚠️ Upstox instrument master unavailable — running on "
                    "Yahoo Finance only this session.")
-    return pd.DataFrame(series).sort_index(), src_count
+    return (pd.DataFrame(series).sort_index(), src_count,
+            pd.Series(dlocks, dtype=float))
 
 
 # ------------------------------------------------------------------ signals
@@ -203,7 +229,8 @@ GAP_WINDOW = 90         # ...within the last 90 trading days
 B_MCAP_MIN, B_MCAP_MAX = 1000, 25000     # band applies to Strategy B only
 
 
-def compute_rankings(prices: pd.DataFrame, mcap: pd.Series = None):
+def compute_rankings(prices: pd.DataFrame, mcap: pd.Series = None,
+                     downlocks: pd.Series = None):
     """Return (df_A, df_B, regime_on, regime_info) — v2 signals."""
     stocks = prices.drop(columns=[BENCH_SYMBOL], errors="ignore")
     pxs = stocks.ffill(limit=5)
@@ -230,6 +257,12 @@ def compute_rankings(prices: pd.DataFrame, mcap: pd.Series = None):
                          "6M %": r6m, "12−1M %": r12_1,
                          "Vol %": vol12 * 100, "MaxGap %": gap_max})
     base = base[base["CMP"] > MIN_PRICE]     # price filter (user rule)
+    if downlocks is not None:
+        base["Locks↓90d"] = downlocks.reindex(base.index).fillna(0).astype(int)
+        # circuit filter: a stock that recently locked LOWER circuit has
+        # trapped sellers — exclude from BOTH books (validated: raises
+        # CAGR AND cuts drawdown; upper-circuit winners stay eligible).
+        base = base[base["Locks↓90d"] <= DOWNLOCK_MAX]
 
     # ---- STRATEGY A v2: fast momentum + anti-speculation gap filter ----
     # 15y re-validation: excluding >15%-day movers cut MaxDD −48.9%→−42.0%
@@ -306,7 +339,7 @@ def gold_sleeve_status(cache_key: str) -> dict:
     res = _fetch_one(GOLD_SYMBOL, keys)
     if res is None or len(res[1]) < 220:
         return {}
-    s = res[1]
+    s = res[1]  # (sym, series, source, downlocks)
     r = s.pct_change()
     r[r.abs() > 0.5] = 0.0
     clean = (1 + r.fillna(0)).cumprod()
@@ -508,12 +541,12 @@ with st.sidebar:
 
 uni = load_universe(up)
 st.sidebar.markdown(f"**{len(uni)} stocks loaded**")
-prices, src = fetch_prices(tuple(uni["Symbol"].tolist()))
+prices, src, downlocks = fetch_prices(tuple(uni["Symbol"].tolist()))
 st.sidebar.caption(f"Data: 🟦 Upstox {src['upstox']} · 🟨 Yahoo "
                    f"{src['yahoo']} · ⚫ no data {src['missing']}")
 mcap_s = (uni.set_index("Symbol")["MarketCap_Cr"]
           if "MarketCap_Cr" in uni.columns else None)
-dfA, dfB, regime_on, bi = compute_rankings(prices, mcap_s)
+dfA, dfB, regime_on, bi = compute_rankings(prices, mcap_s, downlocks)
 
 name_map = uni.set_index("Symbol")
 for df in (dfA, dfB):
@@ -600,7 +633,8 @@ with tabA:
     d = dfA.copy()
     d["Zone"] = zone_col(d, top_n, buffer)
     cols = ["Rank", "Zone", "Industry", "CMP", "1M %", "3M %", "MaxGap %",
-            "Score"]
+            "Locks↓90d", "Score"]
+    cols = [c for c in cols if c in d.columns or c in ("Rank", "Zone")]
     cols = [c for c in cols if c in d.columns]
     st.dataframe(d.head(buffer + 10)[cols].style.format(fmt),
                  use_container_width=True, height=650)
@@ -626,7 +660,8 @@ with tabB:
     d = dfB.copy()
     d["Zone"] = zone_col(d, top_n, buffer)
     cols = ["Rank", "Zone", "Industry", "CMP", "6M %", "12−1M %", "Vol %",
-            "Score"]
+            "Locks↓90d", "Score"]
+    cols = [c for c in cols if c in d.columns or c in ("Rank", "Zone")]
     cols = [c for c in cols if c in d.columns]
     st.dataframe(d.head(buffer + 10)[cols].style.format(fmt),
                  use_container_width=True, height=650)
